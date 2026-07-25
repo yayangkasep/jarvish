@@ -38,4 +38,6 @@ logs/
 .vscode/
 *.swp
 install.log
-src/config/antigravity-accounts.json
+jarvish.log
+antigravity-accounts.json
+/tmp
