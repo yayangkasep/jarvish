@@ -6,7 +6,7 @@ class SessionManager:
         # Ensure database tables exist
         init_db()
         # Limit active context window to 20 messages to save LLM tokens
-        self.MAX_HISTORY = 20
+        self.MAX_HISTORY = 200
 
     def _get_or_create_user(self, db, telegram_id):
         telegram_id = str(telegram_id)
@@ -92,13 +92,30 @@ class SessionManager:
                 prev_msg = final_history[-1]
                 if prev_msg.get("role") == msg.get("role") and msg.get("role") in ["user", "assistant"]:
                     # Merge contents
-                    prev_content = str(prev_msg.get("content", ""))
-                    curr_content = str(msg.get("content", ""))
+                    prev_content = prev_msg.get("content", "")
+                    curr_content = msg.get("content", "")
                     
-                    if prev_content and curr_content:
-                        prev_msg["content"] = prev_content + "\n\n" + curr_content
-                    elif curr_content:
-                        prev_msg["content"] = curr_content
+                    if isinstance(prev_content, list) or isinstance(curr_content, list):
+                        new_content = []
+                        if isinstance(prev_content, list):
+                            new_content.extend(prev_content)
+                        elif prev_content:
+                            new_content.append({"type": "text", "text": str(prev_content)})
+                            
+                        if isinstance(curr_content, list):
+                            new_content.extend(curr_content)
+                        elif curr_content:
+                            new_content.append({"type": "text", "text": str(curr_content)})
+                            
+                        prev_msg["content"] = new_content
+                    else:
+                        prev_str = str(prev_content) if prev_content else ""
+                        curr_str = str(curr_content) if curr_content else ""
+                        
+                        if prev_str and curr_str:
+                            prev_msg["content"] = prev_str + "\n\n" + curr_str
+                        elif curr_str:
+                            prev_msg["content"] = curr_str
                         
                     # Merge tool calls if any
                     if msg.get("tool_calls"):
@@ -108,6 +125,35 @@ class SessionManager:
                 else:
                     final_history.append(msg)
                     
+            # Ensure the history starts with a valid turn (user or assistant text) to prevent API sequence errors
+            while final_history:
+                first_role = final_history[0].get("role")
+                has_tools = bool(final_history[0].get("tool_calls"))
+                
+                if first_role == "user":
+                    break
+                elif first_role == "assistant" and not has_tools:
+                    break
+                else:
+                    final_history.pop(0)
+                    
+            # --- DYNAMIC TOOL TRUNCATION ---
+            # Truncate old tool responses to save tokens.
+            # A tool response is "old" if there is any non-tool message after it.
+            for i in range(len(final_history) - 1):
+                msg = final_history[i]
+                if msg.get("role") == "tool":
+                    is_past = False
+                    for j in range(i + 1, len(final_history)):
+                        if final_history[j].get("role") != "tool":
+                            is_past = True
+                            break
+                    
+                    if is_past:
+                        content = str(msg.get("content", ""))
+                        if len(content) > 1000:
+                            msg["content"] = '{"status": "Data diproses. Detail disembunyikan untuk hemat token."}'
+                            
             return final_history
         finally:
             db.close()
