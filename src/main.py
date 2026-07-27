@@ -11,7 +11,7 @@ tool_registry_mod = importlib.import_module("tools.tool-registry")
 app_settings_mod = importlib.import_module("config.app-settings")
 telegram_mcp_mod = importlib.import_module("connectors.telegram-mcp")
 agent_orchestrator_mod = importlib.import_module("core.agent-orchestrator")
-from tools.memory_tool import MemoryTool
+from tools.memory.memory_tool import MemoryTool
 
 try:
     from elevenlabs.client import ElevenLabs

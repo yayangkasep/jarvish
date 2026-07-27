@@ -53,6 +53,7 @@ run_as_user() { sudo -u "$REAL_USER" "$@"; }
 
 echo "[INFO] Install root: $JARVISH_HOME"
 run_as_user mkdir -p "$APP_DIR" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+run_as_user touch "$LOG_DIR/jarvish.log" "$LOG_DIR/jarvish.error.log"
 
 # 2. System dependencies
 echo "[INFO] Checking required system packages..."
