@@ -94,6 +94,12 @@ if [ ! -d "$APP_DIR/.git" ]; then
     run_as_user git clone "$REPO_URL" "$APP_DIR"
 else
     echo "[INFO] Existing installation detected. Fetching latest code..."
+    
+    # Fix ownership of searxng in case docker changed it (preventing git reset failures)
+    if [ -d "$APP_DIR/searxng" ]; then
+        chown -R "$REAL_USER:$REAL_USER" "$APP_DIR/searxng" || true
+    fi
+    
     run_as_user git -C "$APP_DIR" fetch --tags origin
     run_as_user git -C "$APP_DIR" reset --hard origin/master
 fi
