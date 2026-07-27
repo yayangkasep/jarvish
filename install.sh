@@ -142,7 +142,6 @@ fi
 
 if [ -f "$APP_DIR/docker-compose.yml" ]; then
     echo "[INFO] Pulling backend images..."
-    docker pull lbjlaq/antigravity-manager:latest
     docker pull searxng/searxng:latest
 
     # docker-compose.yml expects env_file at $HOME/.jarvish/.env — keep that contract
@@ -150,9 +149,9 @@ if [ -f "$APP_DIR/docker-compose.yml" ]; then
 
     echo "[INFO] Starting backend services..."
     if docker compose version &>/dev/null; then
-        HOME="$REAL_HOME_DIR" docker compose -f "$APP_DIR/docker-compose.yml" --project-directory "$APP_DIR" up -d antigravity-manager searxng
+        HOME="$REAL_HOME_DIR" docker compose -f "$APP_DIR/docker-compose.yml" --project-directory "$APP_DIR" up -d searxng
     elif command -v docker-compose &>/dev/null; then
-        HOME="$REAL_HOME_DIR" docker-compose -f "$APP_DIR/docker-compose.yml" --project-directory "$APP_DIR" up -d antigravity-manager searxng
+        HOME="$REAL_HOME_DIR" docker-compose -f "$APP_DIR/docker-compose.yml" --project-directory "$APP_DIR" up -d searxng
     fi
     echo "[OK] Backend services started."
 fi

@@ -1,18 +1,4 @@
 services:
-  antigravity-manager:
-    image: lbjlaq/antigravity-manager:latest
-    container_name: antigravity-manager
-    volumes:
-      # Map a clean directory for Antigravity's internal databases
-      - ./antigravity_data:/root/.antigravity_tools
-    environment:
-      - LOG_LEVEL=info
-      - API_KEY=test
-      - ABV_BIND_LOCAL_ONLY=false
-    ports:
-      - "8045:8045"
-    restart: unless-stopped
-    
   searxng:
     image: searxng/searxng:latest
     container_name: searxng
