@@ -221,6 +221,14 @@ def main():
                 "Session memory cleared, Sir. We are starting with a fresh system. What are your next commands?",
             )
             return
+        elif text and text.startswith("/model"):
+            new_model = text.replace("/model", "").strip()
+            if new_model:
+                Provider.Settings.LlmModel = new_model
+                TelegramConnector.SendMessage(user_id, f"AI Model has been switched to: {new_model}")
+            else:
+                TelegramConnector.SendMessage(user_id, f"Current AI Model is: {Provider.Settings.LlmModel}\n\nTo change it, type: /model <model_name>")
+            return
 
         logger.info(f"Processing message from {user_id}...")
         msg_id = TelegramConnector.SendMessage(user_id, "Thinking...")
