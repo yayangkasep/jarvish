@@ -222,12 +222,31 @@ def main():
             )
             return
         elif text and text.startswith("/model"):
-            new_model = text.replace("/model", "").strip()
-            if new_model:
+            args = text.split(maxsplit=1)
+            if len(args) > 1:
+                new_model = args[1].strip()
+                if new_model.lower() == "list":
+                    try:
+                        import requests
+                        endpoint_url = os.getenv("AI_PROVIDER_ENDPOINT", "http://127.0.0.1:20128/v1/chat/completions")
+                        base_url = endpoint_url.split("/v1")[0] + "/v1/models"
+                        resp = requests.get(base_url, timeout=5)
+                        if resp.status_code == 200:
+                            models = [m["id"] for m in resp.json().get("data", [])]
+                            # Limit to top 50 models to avoid too long messages
+                            msg = "Available Models:\n- " + "\n- ".join(models[:50])
+                            if len(models) > 50:
+                                msg += f"\n... and {len(models)-50} more."
+                            TelegramConnector.SendMessage(user_id, msg)
+                            return
+                    except Exception as e:
+                        TelegramConnector.SendMessage(user_id, f"Failed to fetch models: {e}")
+                        return
+                        
                 Provider.Settings.LlmModel = new_model
                 TelegramConnector.SendMessage(user_id, f"AI Model has been switched to: {new_model}")
             else:
-                TelegramConnector.SendMessage(user_id, f"Current AI Model is: {Provider.Settings.LlmModel}\n\nTo change it, type: /model <model_name>")
+                TelegramConnector.SendMessage(user_id, f"Current AI Model is: {Provider.Settings.LlmModel}\n\nTo change it, type: /model <model_name>\nTo view available models, type: /model list")
             return
 
         logger.info(f"Processing message from {user_id}...")
