@@ -1,146 +1,179 @@
 #!/bin/bash
+set -euo pipefail
+
+# ==============================================================================
+#  J.A.R.V.I.S Installer
+#
+#  Layout created by this script (JARVISH_HOME = ~/.jarvish):
+#    ~/.jarvish/
+#      app/       <- git checkout of this repository (source code only)
+#      venv/      <- python virtual environment
+#      config/    <- .env, credentials, antigravity-accounts.json
+#      data/      <- sqlite db, session state
+#      logs/      <- service logs
+#      VERSION    <- currently installed git tag/commit (used by `jarvish update`)
+#
+#  Re-running this script is safe: it upgrades an existing install in place
+#  instead of re-cloning or duplicating services.
+# ==============================================================================
 
 echo "=============================================="
-echo "   J.A.R.V.I.S Installation Script (VPS)      "
+echo "   J.A.R.V.I.S Installer                       "
 echo "=============================================="
 echo ""
 
 # 1. Require Sudo
 if [ "$EUID" -ne 0 ]; then
   echo "[INFO] This script requires root (sudo) privileges."
-  echo "The system will prompt for your password now..."
-  
-  # If executed from a local file, re-run with sudo
   if [ -f "$0" ]; then
       exec sudo bash "$0" "$@"
   else
-      # If executed via curl/piping, abort and instruct the user
-      echo "[ERROR] You are running this script from curl without sudo."
-      echo "Please run it as: curl -sSL <URL> | sudo bash"
+      echo "[ERROR] Piped from curl without sudo. Run as: curl -sSL <URL> | sudo bash"
       exit 1
   fi
 fi
 
-# Determine the real user who invoked sudo
-if [ -n "$SUDO_USER" ]; then
-    REAL_USER=$SUDO_USER
+if [ -n "${SUDO_USER:-}" ]; then
+    REAL_USER="$SUDO_USER"
     REAL_HOME_DIR=$(getent passwd "$SUDO_USER" | cut -d: -f6)
 else
     REAL_USER=$(whoami)
-    REAL_HOME_DIR=$HOME
+    REAL_HOME_DIR="$HOME"
 fi
 
-TARGET_DIR="$REAL_HOME_DIR/.jarvish"
-CURRENT_DIR=$(pwd)
-VENV_DIR="$TARGET_DIR/venv"
+JARVISH_HOME="$REAL_HOME_DIR/.jarvish"
+APP_DIR="$JARVISH_HOME/app"
+VENV_DIR="$JARVISH_HOME/venv"
+CONFIG_DIR="$JARVISH_HOME/config"
+DATA_DIR="$JARVISH_HOME/data"
+LOG_DIR="$JARVISH_HOME/logs"
 REPO_URL="https://github.com/yayangkasep/jarvish.git"
 
-# 2. Check and Install Basic Dependencies
+run_as_user() { sudo -u "$REAL_USER" "$@"; }
+
+echo "[INFO] Install root: $JARVISH_HOME"
+run_as_user mkdir -p "$APP_DIR" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+
+# 2. System dependencies
 echo "[INFO] Checking required system packages..."
-sudo apt-get update -yqq >/dev/null 2>&1
+apt-get update -yqq >/dev/null 2>&1 || true
 for pkg in python3 python3-pip git curl; do
-    if ! command -v $pkg &>/dev/null; then
-        echo "[INFO] Installing $pkg automatically..."
-        sudo apt-get install -y $pkg >/dev/null 2>&1
+    if ! command -v "$pkg" &>/dev/null; then
+        echo "[INFO] Installing $pkg..."
+        apt-get install -y "$pkg" >/dev/null 2>&1
     fi
 done
 
-# 3. Clone Repository
-echo "[INFO] Preparing J.A.R.V.I.S repository at $TARGET_DIR..."
-if [ ! -d "$TARGET_DIR/.git" ]; then
-    if [ -d "$TARGET_DIR" ]; then
-        echo "[WARNING] Target directory exists but is not a git repo. Backing up..."
-        sudo mv "$TARGET_DIR" "${TARGET_DIR}_backup_$(date +%s)"
+# 3. Migrate old flat layout (git repo directly at ~/.jarvish) if present.
+#    Config/data already live at the right place (paths.py always pointed at
+#    ~/.jarvish/config and ~/.jarvish/data) — only the source checkout moves.
+if [ ! -d "$APP_DIR/.git" ] && [ -d "$JARVISH_HOME/.git" ]; then
+    echo "[INFO] Migrating existing install to the new app/ layout..."
+    run_as_user mkdir -p "$APP_DIR"
+    shopt -s dotglob
+    for item in "$JARVISH_HOME"/*; do
+        base=$(basename "$item")
+        case "$base" in
+            app|venv|config|data|logs|VERSION|.env|.|..) continue ;;
+        esac
+        run_as_user mv "$item" "$APP_DIR/"
+    done
+    shopt -u dotglob
+    echo "[OK] Migration complete: source now lives in $APP_DIR"
+fi
+
+# 3b. Clone or update repository (idempotent)
+if [ ! -d "$APP_DIR/.git" ]; then
+    if [ -n "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
+        echo "[WARNING] $APP_DIR exists and is not empty. Backing up..."
+        mv "$APP_DIR" "${APP_DIR}_backup_$(date +%s)"
+        run_as_user mkdir -p "$APP_DIR"
     fi
-    echo "[INFO] Cloning repository into $TARGET_DIR..."
-    sudo -u "$REAL_USER" git clone "$REPO_URL" "$TARGET_DIR"
+    echo "[INFO] Cloning repository into $APP_DIR..."
+    run_as_user git clone "$REPO_URL" "$APP_DIR"
+else
+    echo "[INFO] Existing installation detected. Fetching latest code..."
+    run_as_user git -C "$APP_DIR" fetch --tags origin
+    run_as_user git -C "$APP_DIR" reset --hard origin/master
 fi
 
-# 4. Install 'uv' if not present
-echo "[INFO] Ensuring 'uv' is installed for fast environment building..."
-if ! sudo -u "$REAL_USER" command -v uv &>/dev/null; then
-    echo "[INFO] Installing uv..."
-    sudo -u "$REAL_USER" curl -LsSf https://astral.sh/uv/install.sh | sudo -u "$REAL_USER" sh
-fi
+# Record installed version (tag if present, else short commit hash)
+INSTALLED_VERSION=$(run_as_user git -C "$APP_DIR" describe --tags --always)
+echo "$INSTALLED_VERSION" | run_as_user tee "$JARVISH_HOME/VERSION" >/dev/null
+echo "[INFO] Installed version: $INSTALLED_VERSION"
 
-# Locate uv binary
+# 4. Install 'uv'
+echo "[INFO] Ensuring 'uv' is installed..."
+if ! run_as_user command -v uv &>/dev/null; then
+    run_as_user curl -LsSf https://astral.sh/uv/install.sh | run_as_user sh
+fi
 UV_BIN="$REAL_HOME_DIR/.local/bin/uv"
-if [ ! -f "$UV_BIN" ]; then
-    UV_BIN="$REAL_HOME_DIR/.cargo/bin/uv"
-fi
-if [ ! -f "$UV_BIN" ]; then
-    UV_BIN=$(sudo -u "$REAL_USER" which uv || true)
-fi
-
+[ -f "$UV_BIN" ] || UV_BIN="$REAL_HOME_DIR/.cargo/bin/uv"
+[ -f "$UV_BIN" ] || UV_BIN=$(run_as_user which uv || true)
 if [ -z "$UV_BIN" ] || [ ! -f "$UV_BIN" ]; then
-    echo "[ERROR] uv installation failed or binary not found!"
+    echo "[ERROR] uv installation failed."
     exit 1
 fi
 
-# 5. Create Virtual Environment and Install Package
-echo ""
-echo "[INFO] Creating Virtual Environment at $VENV_DIR using uv..."
-sudo -u "$REAL_USER" "$UV_BIN" venv "$VENV_DIR"
+# 5. Virtual environment + package install (idempotent: reuses existing venv)
+echo "[INFO] Setting up virtual environment at $VENV_DIR..."
+if [ ! -d "$VENV_DIR" ]; then
+    run_as_user "$UV_BIN" venv "$VENV_DIR"
+fi
 
-echo "[INFO] Installing J.A.R.V.I.S package in editable mode..."
-cd "$TARGET_DIR"
-sudo -u "$REAL_USER" "$UV_BIN" pip install -e . --python "$VENV_DIR"
+echo "[INFO] Installing J.A.R.V.I.S package..."
+run_as_user "$UV_BIN" pip install -e "$APP_DIR" --python "$VENV_DIR"
 
-# 6. Install Backend Services (Docker Images)
+# 6. Docker backend services
 echo ""
 echo "[INFO] Checking Docker installation..."
 if ! command -v docker &>/dev/null; then
-    echo "[INFO] Docker not found! Starting automatic installation of Docker Engine..."
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sudo sh get-docker.sh >/dev/null 2>&1
-    rm -f get-docker.sh
-    
-    echo "[INFO] Adding user '$REAL_USER' to the docker group..."
-    sudo usermod -aG docker "$REAL_USER"
-    
-    # Enable and start docker service
-    sudo systemctl enable docker
-    sudo systemctl start docker
-    echo "[OK] Docker installed successfully!"
+    echo "[INFO] Installing Docker Engine..."
+    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+    sh /tmp/get-docker.sh >/dev/null 2>&1
+    rm -f /tmp/get-docker.sh
+    usermod -aG docker "$REAL_USER"
+    systemctl enable docker
+    systemctl start docker
+    echo "[OK] Docker installed."
 else
-    echo "[OK] Docker is already installed."
+    echo "[OK] Docker already installed."
 fi
 
-echo "[INFO] Setting up Backend Docker Services..."
-echo "[INFO] Pulling necessary images..."
-sudo docker pull lbjlaq/antigravity-manager:latest
-sudo docker pull searxng/searxng:latest
+if [ -f "$APP_DIR/docker-compose.yml" ]; then
+    echo "[INFO] Pulling backend images..."
+    docker pull lbjlaq/antigravity-manager:latest
+    docker pull searxng/searxng:latest
 
-if [ -f "docker-compose.yml" ]; then
-    echo "[INFO] Preparing .env file for Docker Services..."
-    sudo -u "$REAL_USER" touch "$TARGET_DIR/.env"
-    
-    echo "[INFO] Starting Antigravity Manager and SearXNG via docker-compose..."
-    if sudo docker compose version &>/dev/null; then
-        sudo HOME="$REAL_HOME_DIR" docker compose up -d antigravity-manager searxng
+    # docker-compose.yml expects env_file at $HOME/.jarvish/.env — keep that contract
+    run_as_user touch "$JARVISH_HOME/.env"
+
+    echo "[INFO] Starting backend services..."
+    if docker compose version &>/dev/null; then
+        HOME="$REAL_HOME_DIR" docker compose -f "$APP_DIR/docker-compose.yml" --project-directory "$APP_DIR" up -d antigravity-manager searxng
     elif command -v docker-compose &>/dev/null; then
-        sudo HOME="$REAL_HOME_DIR" docker-compose up -d antigravity-manager searxng
+        HOME="$REAL_HOME_DIR" docker-compose -f "$APP_DIR/docker-compose.yml" --project-directory "$APP_DIR" up -d antigravity-manager searxng
     fi
     echo "[OK] Backend services started."
 fi
 
-# 7. Setup Systemd Service
+# 7. Systemd service
 echo ""
-echo "[INFO] Setting up J.A.R.V.I.S Systemd Service..."
+echo "[INFO] Installing systemd service..."
 SERVICE_PATH="/etc/systemd/system/jarvish.service"
-
-echo "Generating service file..."
-cat <<EOF > $SERVICE_PATH
+cat <<EOF > "$SERVICE_PATH"
 [Unit]
 Description=Jarvish AI Telegram Bot
-After=network.target
+After=network.target docker.service
 
 [Service]
 Type=simple
 User=$REAL_USER
-WorkingDirectory=$TARGET_DIR
+WorkingDirectory=$APP_DIR
 ExecStart=$VENV_DIR/bin/jarvish-server
 Environment=PYTHONUNBUFFERED=1
+StandardOutput=append:$LOG_DIR/jarvish.log
+StandardError=append:$LOG_DIR/jarvish.error.log
 Restart=on-failure
 RestartSec=5s
 
@@ -148,25 +181,25 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
 
-echo "Enabling and starting J.A.R.V.I.S service..."
 systemctl daemon-reload
 systemctl enable jarvish.service
 systemctl restart jarvish.service
-echo "[OK] Service jarvish.service is now running in the background!"
+echo "[OK] jarvish.service is running."
 
-# 8. Setup Global CLI Wrapper
+# 8. Global CLI wrapper
 echo ""
-echo "[INFO] Setting up 'jarvish' Global Command..."
+echo "[INFO] Linking global 'jarvish' command..."
 ln -sf "$VENV_DIR/bin/jarvish" /usr/local/bin/jarvish
 chmod +x /usr/local/bin/jarvish
-echo "[OK] 'jarvish' command is now available everywhere!"
 
 echo ""
 echo "=============================================="
-echo "  Installation Complete!"
-echo "  J.A.R.V.I.S is now securely installed in $TARGET_DIR"
-echo "  - To configure secrets: jarvish configure"
-echo "  - To upgrade system:    jarvish upgrade"
-echo "  - To check status:      sudo systemctl status jarvish.service"
-echo "  - To view logs:         sudo journalctl -u jarvish.service -f"
+echo "  Installation Complete — version $INSTALLED_VERSION"
+echo "  Home directory:      $JARVISH_HOME"
+echo ""
+echo "  jarvish configure   - set up API keys / secrets"
+echo "  jarvish doctor       - verify the install is healthy"
+echo "  jarvish update       - check for a new version (no changes made)"
+echo "  jarvish upgrade       - install the latest version"
+echo "  jarvish status / logs / restart"
 echo "=============================================="

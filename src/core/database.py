@@ -37,6 +37,24 @@ class CoreMemory(Base):
     
     user = relationship("User", back_populates="memories")
 
+class ChatSummary(Base):
+    __tablename__ = 'chat_summaries'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    summary_text = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User")
+
+class PendingCommand(Base):
+    __tablename__ = 'pending_commands'
+    id = Column(Integer, primary_key=True)
+    code = Column(String(20), unique=True, nullable=False)
+    command = Column(Text, nullable=False)
+    telegram_id = Column(String(50), nullable=False)
+    status = Column(String(20), default="pending") # pending, completed, denied
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 # Database Setup
 def get_db_url():
     data_dir = paths.get_data_dir()

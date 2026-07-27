@@ -125,6 +125,51 @@ class TelegramMcp(BaseConnector):
                                 print(
                                     f"[{self.PlatformType}] Received message from {user_id}"
                                 )
+                                
+                                # Confirmation Gate Interception
+                                if text and (text.startswith("/confirm ") or text.startswith("/deny ")):
+                                    parts = text.split(" ")
+                                    if len(parts) >= 2:
+                                        cmd = parts[0]
+                                        code = parts[1].strip()
+                                        
+                                        try:
+                                            from core.database import get_session, PendingCommand
+                                            import subprocess
+                                            
+                                            db = get_session()
+                                            pending = db.query(PendingCommand).filter_by(code=code, status="pending").first()
+                                            
+                                            if not pending:
+                                                self.SendMessage(user_id, f"Invalid or expired confirmation code: {code}")
+                                            else:
+                                                if cmd == "/deny":
+                                                    pending.status = "denied"
+                                                    db.commit()
+                                                    self.SendMessage(user_id, f"Command execution denied for code {code}.")
+                                                elif cmd == "/confirm":
+                                                    self.SendMessage(user_id, f"Executing command for {code}...")
+                                                    try:
+                                                        result = subprocess.run(
+                                                            pending.command, shell=True, capture_output=True, text=True, timeout=30
+                                                        )
+                                                        output = result.stdout + result.stderr
+                                                        if not output.strip():
+                                                            output = "[No output]"
+                                                        elif len(output) > 2000:
+                                                            output = output[:2000] + "\n...[Output truncated]..."
+                                                        self.SendMessage(user_id, f"Execution completed:\n```\n{output}\n```")
+                                                        pending.status = "completed"
+                                                    except Exception as e:
+                                                        self.SendMessage(user_id, f"Execution failed:\n{e}")
+                                                        pending.status = "failed"
+                                                    db.commit()
+                                            db.close()
+                                        except Exception as e:
+                                            print(f"[{self.PlatformType}] Error handling confirmation gate: {e}")
+                                            self.SendMessage(user_id, f"Internal error during confirmation: {e}")
+                                    continue  # Skip passing to LLM
+
                                 # Execute the callback in a safe manner
                                 try:
                                     callback(user_id, text, image_base64, bool(voice))

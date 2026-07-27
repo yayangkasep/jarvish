@@ -27,6 +27,30 @@ class SystemCommandTool:
         if not command:
             return "Error: The 'command' argument is empty."
 
+        import re
+        import uuid
+        
+        risk_pattern = r'^(sudo|rm|passwd|usermod|userdel|chown|chmod|iptables|ufw|kill|mkfs|dd)\b'
+        is_risky = re.match(risk_pattern, command.strip()) or ".jarvish/config" in command
+
+        if is_risky:
+            try:
+                from core.database import get_session, PendingCommand
+                code = "CONF-" + uuid.uuid4().hex[:4].upper()
+                db = get_session()
+                pending = PendingCommand(
+                    code=code,
+                    command=command,
+                    telegram_id="ANY",
+                    status="pending"
+                )
+                db.add(pending)
+                db.commit()
+                db.close()
+                return f"SECURITY ALERT: The command `{command}` is classified as HIGH RISK. Execution has been paused. Please ask the user to explicitly confirm by sending `/confirm {code}` or deny it by sending `/deny {code}` in Telegram."
+            except Exception as e:
+                return f"Error creating confirmation gate: {e}"
+
         try:
             # Gunakan timeout agar tidak hang
             result = subprocess.run(

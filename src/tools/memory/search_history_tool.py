@@ -38,16 +38,33 @@ class SearchHistoryTool:
 
             # Case-insensitive search using LIKE
             search_pattern = f"%{keyword}%"
+            
+            # Search archived summaries first
+            from core.database import ChatSummary
+            summary_results = db.query(ChatSummary).filter(
+                ChatSummary.user_id == user.id,
+                ChatSummary.summary_text.ilike(search_pattern)
+            ).order_by(ChatSummary.created_at.desc()).limit(5).all()
+            
+            # Then search raw history
             results = db.query(ChatHistory).filter(
                 ChatHistory.user_id == user.id,
                 ChatHistory.message_json.ilike(search_pattern)
-            ).order_by(ChatHistory.timestamp.desc()).limit(15).all()
+            ).order_by(ChatHistory.timestamp.desc()).limit(10).all()
 
-            if not results:
+            if not results and not summary_results:
                 return f"No past conversations found containing '{keyword}'."
 
             # Format results
             formatted_results = []
+            
+            # Format summaries first
+            if summary_results:
+                formatted_results.append("=== ARCHIVED SUMMARIES ===")
+                for s in summary_results:
+                    formatted_results.append(f"[{s.created_at.strftime('%Y-%m-%d')}] SUMMARY: {s.summary_text}")
+                formatted_results.append("==========================")
+                
             for r in results:
                 try:
                     msg = json.loads(r.message_json)

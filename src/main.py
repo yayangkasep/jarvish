@@ -1,3 +1,4 @@
+from config.logger import logger
 import importlib
 import sys
 import os
@@ -47,12 +48,12 @@ def strip_markdown_for_tts(text):
 
 def send_voice_note(connector, user_id, text):
     if not ElevenLabs or not AudioSegment:
-        print("TTS packages not installed. Skipping voice note.")
+        logger.info("TTS packages not installed. Skipping voice note.")
         return
         
     api_key = os.getenv("ELEVENLABS_API_KEY")
     if not api_key:
-        print("ELEVENLABS_API_KEY not found in environment. Skipping voice note.")
+        logger.info("ELEVENLABS_API_KEY not found in environment. Skipping voice note.")
         return
         
     clean_text = strip_markdown_for_tts(text)
@@ -90,7 +91,7 @@ def send_voice_note(connector, user_id, text):
             # Send to Telegram
             connector.SendVoice(user_id, ogg_path)
     except Exception as e:
-        print(f"Error generating/sending voice note: {e}")
+        logger.error(f"Error generating/sending voice note: {e}")
 
 AiProvider = ai_provider_mod.AiProvider
 SessionManager = session_manager_mod.SessionManager
@@ -123,23 +124,31 @@ def send_long_message(connector, user_id, text, msg_id=None):
 
 
 def main():
-    print("--- Initializing Jarvish-Google System ---")
+    logger.info("--- Initializing Jarvish-Google System ---")
 
     # 0. Load Configuration
     Settings = AppSettings()
-    print(f"Server is running!")
-    print(f"Telegram Token Loaded: {'Yes' if Settings.GetTelegramToken() else 'No'}")
+    logger.info(f"Server is running!")
+    logger.info(f"Telegram Token Loaded: {'Yes' if Settings.GetTelegramToken() else 'No'}")
 
     # 1. Initialize Connectors
-    print("\n--- Testing Connectors ---")
+    logger.info("\n--- Testing Connectors ---")
     AllowedUsers = Settings.GetAllowedUsers()
+    
+    # SECURITY: Fail-closed if no allowed users are specified or if wildcard is used
+    if not AllowedUsers or "*" in AllowedUsers:
+        logger.info("CRITICAL SECURITY ERROR: TELEGRAM_ALLOWED_USERS is empty or set to '*'.")
+        logger.info("You must specify a comma-separated list of allowed Telegram user IDs in your .env file.")
+        logger.info("Failing safe and terminating bot.")
+        sys.exit(1)
+        
     TelegramConnector = TelegramMcp(
         Token=Settings.GetTelegramToken(), AllowedUsers=AllowedUsers
     )
     TelegramConnector.Connect()
 
     # 2. Initialize Tools
-    print("\n--- Initializing Tools ---")
+    logger.info("\n--- Initializing Tools ---")
     Registry = ToolRegistry()
     Registry.AutoDiscoverTools(os.path.join(os.path.dirname(__file__), "tools"))
 
@@ -156,7 +165,7 @@ def main():
             os.path.dirname(__file__), "bin", "github-mcp-server"
         )
         if os.path.exists(github_mcp_path):
-            print("\n--- Initializing GitHub MCP ---")
+            logger.info("\n--- Initializing GitHub MCP ---")
             mcp_manager = McpManager(
                 command=github_mcp_path, args=["stdio", "--toolsets=all"]
             )
@@ -167,15 +176,15 @@ def main():
                 schema["name"] = tool_name
                 wrapper = McpToolWrapper(mcp_manager, original_name)
                 Registry.RegisterTool(tool_name, wrapper, schema)
-            print(f"Registered {len(mcp_schemas)} MCP tools.")
+            logger.info(f"Registered {len(mcp_schemas)} MCP tools.")
     except Exception as e:
-        print(f"Error loading MCP tools: {e}")
+        logger.error(f"Error loading MCP tools: {e}")
 
     Schemas = Registry.GetToolSchemas()
-    print(f"Registered {len(Schemas)} tool schemas.")
+    logger.info(f"Registered {len(Schemas)} tool schemas.")
 
     # 3. Initialize AI Provider and Session Manager
-    print("\n--- Initializing AI Provider and Session ---")
+    logger.info("\n--- Initializing AI Provider and Session ---")
     Provider = AiProvider()
     Sessions = SessionManager()
 
@@ -213,7 +222,7 @@ def main():
             )
             return
 
-        print(f"Processing message from {user_id}...")
+        logger.info(f"Processing message from {user_id}...")
         msg_id = TelegramConnector.SendMessage(user_id, "Thinking...")
 
         def progress_cb(msg):
@@ -241,7 +250,7 @@ def main():
                 send_long_message(TelegramConnector, user_id, Response, msg_id)
 
         except Exception as e:
-            print(f"Error processing prompt: {e}")
+            logger.error(f"Error processing prompt: {e}")
             TelegramConnector.EditMessage(
                 user_id,
                 msg_id,
@@ -261,7 +270,7 @@ def main():
             db.close()
             
     def proactive_callback(user_id, text):
-        print(f"Executing proactive routine for {user_id}")
+        logger.info(f"Executing proactive routine for {user_id}")
         msg_id = TelegramConnector.SendMessage(user_id, "Compiling proactive report...")
         
         def progress_cb(msg):
@@ -284,7 +293,7 @@ def main():
             send_voice_note(TelegramConnector, user_id, Response)
             
         except Exception as e:
-            print(f"Error in proactive event: {e}")
+            logger.error(f"Error in proactive event: {e}")
             TelegramConnector.EditMessage(user_id, msg_id, f"Failed to compile proactive report: {e}")
 
     scheduler = BackgroundScheduler(proactive_callback, get_target_users)
@@ -294,7 +303,7 @@ def main():
     if TelegramConnector.IsConnected:
         TelegramConnector.StartPolling(handle_incoming_message)
     else:
-        print("Failed to start bot: Telegram connector is not connected.")
+        logger.info("Failed to start bot: Telegram connector is not connected.")
 
 
 if __name__ == "__main__":

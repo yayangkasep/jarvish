@@ -172,35 +172,223 @@ def configure_models():
     print(f"✅ AI Model successfully updated to {selected_model} (Temp: {selected_temp})!")
     print("Please run 'jarvish restart' to apply the new model.")
 
+def _jarvish_home():
+    return os.path.expanduser("~/.jarvish")
+
+def _app_dir():
+    """Directory containing the git checkout. Falls back to the legacy
+    layout (~/.jarvish itself) for installs made before the app/ split."""
+    home = _jarvish_home()
+    app_dir = os.path.join(home, "app")
+    if os.path.isdir(os.path.join(app_dir, ".git")):
+        return app_dir
+    if os.path.isdir(os.path.join(home, ".git")):
+        return home
+    return app_dir
+
+def _uv_bin():
+    for candidate in (
+        os.path.expanduser("~/.local/bin/uv"),
+        os.path.expanduser("~/.cargo/bin/uv"),
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+def _git(args, cwd, check=True):
+    return subprocess.run(
+        ["git"] + args, cwd=cwd, capture_output=True, text=True, check=check
+    )
+
+def get_version():
+    """Returns the currently installed version (git tag if available, else short hash)."""
+    app_dir = _app_dir()
+    try:
+        result = _git(["describe", "--tags", "--always"], cwd=app_dir)
+        return result.stdout.strip()
+    except Exception:
+        version_file = os.path.join(_jarvish_home(), "VERSION")
+        if os.path.exists(version_file):
+            with open(version_file) as f:
+                return f.read().strip()
+        return "unknown"
+
+def print_version():
+    print(f"jarvish {get_version()}")
+
+def check_update():
+    """Like 'apt update': looks for new commits upstream, prints what's new,
+    but changes nothing locally."""
+    print("=============================================")
+    print("     Checking for J.A.R.V.I.S updates        ")
+    print("=============================================")
+    app_dir = _app_dir()
+    if not os.path.isdir(os.path.join(app_dir, ".git")):
+        print(f"❌ No git checkout found at {app_dir}. Re-run install.sh.")
+        return
+
+    current = get_version()
+    print(f"Current version: {current}")
+    print("Fetching remote refs...")
+    try:
+        _git(["fetch", "--tags", "origin"], cwd=app_dir)
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Could not reach origin: {e.stderr.strip()}")
+        return
+
+    local_head = _git(["rev-parse", "HEAD"], cwd=app_dir).stdout.strip()
+    remote_head = _git(["rev-parse", "origin/master"], cwd=app_dir).stdout.strip()
+
+    if local_head == remote_head:
+        print("✅ Already up to date.")
+        return
+
+    behind = _git(
+        ["rev-list", "--count", f"{local_head}..{remote_head}"], cwd=app_dir
+    ).stdout.strip()
+    print(f"\n⬆️  {behind} new commit(s) available:\n")
+    log = _git(
+        ["log", "--oneline", f"{local_head}..{remote_head}"], cwd=app_dir
+    ).stdout.strip()
+    print(log)
+    print("\nRun 'jarvish upgrade' to install these changes.")
+
 def upgrade_system():
+    """Like 'apt upgrade': actually applies the update, with a rollback
+    safety net (tags the current commit before moving)."""
     print("=============================================")
     print("     J.A.R.V.I.S Upgrade Initiated           ")
     print("=============================================")
-    print("Pulling latest code and upgrading package...")
+    app_dir = _app_dir()
+    jarvish_home = _jarvish_home()
+
+    if not os.path.isdir(os.path.join(app_dir, ".git")):
+        print(f"❌ No git checkout found at {app_dir}. Re-run install.sh.")
+        return
+
     try:
-        repo_dir = os.path.expanduser("~/.jarvish")
-        
-        # Git pull
-        print("Updating repository...")
-        subprocess.check_call(["git", "reset", "--hard"], cwd=repo_dir)
-        subprocess.check_call(["git", "pull", "origin", "master"], cwd=repo_dir)
-        
-        # Use uv if available for much faster upgrades
-        uv_bin = os.path.expanduser("~/.local/bin/uv")
-        if not os.path.exists(uv_bin):
-            uv_bin = os.path.expanduser("~/.cargo/bin/uv")
-            
+        before = get_version()
+        print(f"Currently installed: {before}")
+
+        print("Fetching latest code...")
+        _git(["fetch", "--tags", "origin"], cwd=app_dir)
+
+        local_head = _git(["rev-parse", "HEAD"], cwd=app_dir).stdout.strip()
+        remote_head = _git(["rev-parse", "origin/master"], cwd=app_dir).stdout.strip()
+        if local_head == remote_head:
+            print("✅ Already up to date, nothing to do.")
+            return
+
+        # Safety net: tag current state so 'jarvish rollback' can return to it.
+        rollback_tag = f"pre-upgrade-{local_head[:8]}"
+        subprocess.run(
+            ["git", "tag", "-f", rollback_tag, local_head],
+            cwd=app_dir, capture_output=True, text=True,
+        )
+
+        print("Applying update...")
+        subprocess.check_call(["git", "reset", "--hard", "origin/master"], cwd=app_dir)
+
+        uv_bin = _uv_bin()
+        venv_python = os.path.join(jarvish_home, "venv", "bin", "python")
         print("Installing dependencies...")
-        if os.path.exists(uv_bin):
-            subprocess.check_call([uv_bin, "pip", "install", "-e", ".", "--python", sys.executable], cwd=repo_dir)
+        if uv_bin and os.path.exists(venv_python):
+            subprocess.check_call(
+                [uv_bin, "pip", "install", "-e", app_dir, "--python", venv_python]
+            )
         else:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", "."], cwd=repo_dir)
-        print("✅ Upgrade successful!")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", app_dir])
+
+        after = get_version()
+        print(f"✅ Upgraded {before} -> {after}")
+        print(f"   (rollback point saved as git tag '{rollback_tag}' in {app_dir})")
+
         print("Restarting J.A.R.V.I.S service...")
         subprocess.check_call(["sudo", "systemctl", "restart", "jarvish.service"])
         print("✅ Service restarted successfully!")
     except subprocess.CalledProcessError as e:
         print(f"❌ Upgrade failed: {e}")
+        print("Nothing was left half-applied — the previous commit is still tagged for rollback if needed.")
+
+def rollback_system():
+    """Restores the app checkout to the commit tagged just before the last upgrade."""
+    app_dir = _app_dir()
+    tags = _git(["tag", "--list", "pre-upgrade-*", "--sort=-creatordate"], cwd=app_dir).stdout.strip().splitlines()
+    if not tags:
+        print("❌ No rollback point found (no upgrade has been performed yet).")
+        return
+    target = tags[0]
+    print(f"Rolling back to {target}...")
+    try:
+        subprocess.check_call(["git", "reset", "--hard", target], cwd=app_dir)
+        subprocess.check_call(["sudo", "systemctl", "restart", "jarvish.service"])
+        print(f"✅ Rolled back to {target} and restarted the service.")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Rollback failed: {e}")
+
+def doctor():
+    """Health check: verifies the install is actually usable, similar in
+    spirit to 'hermes doctor' / 'apt check'."""
+    print("=============================================")
+    print("     J.A.R.V.I.S Doctor                      ")
+    print("=============================================")
+    ok = True
+
+    def check(label, passed, hint=""):
+        nonlocal ok
+        status = "✅" if passed else "❌"
+        print(f"{status} {label}")
+        if not passed and hint:
+            print(f"    -> {hint}")
+        ok = ok and passed
+
+    app_dir = _app_dir()
+    check("App checkout present", os.path.isdir(os.path.join(app_dir, ".git")),
+          "Re-run install.sh")
+
+    venv_python = os.path.join(_jarvish_home(), "venv", "bin", "python")
+    check("Virtual environment present", os.path.exists(venv_python),
+          "Re-run install.sh")
+
+    env_file = paths.get_env_file()
+    env_exists = os.path.exists(env_file)
+    check(".env configuration exists", env_exists, "Run 'jarvish configure'")
+
+    if env_exists:
+        import dotenv
+        values = dotenv.dotenv_values(env_file)
+        check("TELEGRAM_BOT_TOKEN set", bool(values.get("TELEGRAM_BOT_TOKEN")),
+              "Run 'jarvish configure'")
+        allowed = values.get("TELEGRAM_ALLOWED_USERS", "").strip()
+        check(
+            "TELEGRAM_ALLOWED_USERS is restricted (not '*' / empty)",
+            bool(allowed) and allowed != "*",
+            "Set explicit user IDs with 'jarvish configure' — an open bot can run "
+            "shell commands on this machine for anyone who messages it.",
+        )
+
+    docker_ok = subprocess.run(
+        ["docker", "info"], capture_output=True, text=True
+    ).returncode == 0
+    check("Docker daemon reachable", docker_ok, "Start Docker: sudo systemctl start docker")
+
+    try:
+        from core.database import get_session, PendingCommand
+        db = get_session()
+        db.query(PendingCommand).first()
+        check("Confirmation Gate DB Active", True)
+        db.close()
+    except Exception as e:
+        check("Confirmation Gate DB Active", False, f"Please restart jarvish to initialize DB.")
+
+    service_active = subprocess.run(
+        ["systemctl", "is-active", "--quiet", "jarvish.service"]
+    ).returncode == 0
+    check("jarvish.service is running", service_active,
+          "Run 'jarvish restart', then 'jarvish logs' if it fails again")
+
+    print("")
+    print("All checks passed." if ok else "Some checks failed — see hints above.")
 
 def status_system():
     subprocess.call(["sudo", "systemctl", "status", "jarvish.service"])
@@ -221,7 +409,7 @@ def auth_google():
     print("     Google OAuth Authentication Wizard      ")
     print("=============================================")
     try:
-        from tools import login_google
+        from tools.google import login_google
         login_google.main()
     except Exception as e:
         print(f"❌ Failed to launch Google Auth: {e}")
@@ -231,7 +419,11 @@ def print_help():
     print("\nCommands:")
     print("  configure     - Setup API keys and environment variables")
     print("  models        - Switch AI Models (e.g. Gemini Pro, Claude) and Temperature")
-    print("  upgrade       - Pull latest code and upgrade the system")
+    print("  version       - Show the currently installed version")
+    print("  update        - Check for a new version upstream (like 'apt update' — no changes made)")
+    print("  upgrade       - Install the latest version (like 'apt upgrade')")
+    print("  rollback      - Revert to the version installed before the last upgrade")
+    print("  doctor        - Run a health check on the installation")
     print("  auth-google   - Authenticate with Google (Calendar/Gmail) via OAuth")
     print("  restart       - Restart the J.A.R.V.I.S background service")
     print("  status        - Check if J.A.R.V.I.S service is running")
@@ -251,8 +443,16 @@ def main():
         configure_env()
         configure_antigravity()
         print("\n🎉 Configuration Complete! Please run 'sudo systemctl restart jarvish.service' to apply changes.")
+    elif cmd in ("version", "--version", "-v"):
+        print_version()
+    elif cmd == "update":
+        check_update()
     elif cmd == "upgrade":
         upgrade_system()
+    elif cmd == "rollback":
+        rollback_system()
+    elif cmd == "doctor":
+        doctor()
     elif cmd == "restart":
         restart_system()
     elif cmd == "status":

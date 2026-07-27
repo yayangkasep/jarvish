@@ -10,7 +10,7 @@ class AppSettings:
         load_dotenv(self.EnvFilePath)
 
         self.TelegramBotToken = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        self.TelegramAllowedUsers = os.getenv("TELEGRAM_ALLOWED_USERS", "*")
+        self.TelegramAllowedUsers = os.getenv("TELEGRAM_ALLOWED_USERS", "")
         self.GoogleClientId = os.getenv("GOOGLE_CLIENT_ID", "")
         self.GoogleClientSecret = os.getenv("GOOGLE_CLIENT_SECRET", "")
         self.LlmModel = os.getenv("LLM_MODEL", "gemini-3-pro-high")

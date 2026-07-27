@@ -1,5 +1,5 @@
 import json
-from core.database import get_session, User, ChatHistory, init_db
+from core.database import get_session, User, ChatHistory, init_db, ChatSummary
 
 class SessionManager:
     def __init__(self):
@@ -140,19 +140,25 @@ class SessionManager:
             # --- DYNAMIC TOOL TRUNCATION ---
             # Truncate old tool responses to save tokens.
             # A tool response is "old" if there is any non-tool message after it.
-            for i in range(len(final_history) - 1):
+            # Calculate how many turns ago this message was
+            # We count user messages from the end to determine "turns"
+            user_turns = 0
+            for i in range(len(final_history) - 1, -1, -1):
                 msg = final_history[i]
-                if msg.get("role") == "tool":
-                    is_past = False
-                    for j in range(i + 1, len(final_history)):
-                        if final_history[j].get("role") != "tool":
-                            is_past = True
-                            break
-                    
-                    if is_past:
-                        content = str(msg.get("content", ""))
-                        if len(content) > 1000:
-                            msg["content"] = '{"status": "Data diproses. Detail disembunyikan untuk hemat token."}'
+                if msg.get("role") == "user":
+                    user_turns += 1
+                
+                # Asymmetric Text Truncation for assistant messages older than 3 turns
+                if msg.get("role") == "assistant" and user_turns > 3:
+                    text_content = msg.get("content", "")
+                    if isinstance(text_content, str) and len(text_content) > 300:
+                        msg["content"] = text_content[:300] + "... [truncated to save context]"
+                
+                # Dynamic Tool Truncation
+                if msg.get("role") == "tool" and user_turns > 0:
+                    tool_content = str(msg.get("content", ""))
+                    if len(tool_content) > 500:
+                        msg["content"] = '{"status": "Data diproses. Detail disembunyikan untuk hemat token."}'
                             
             return final_history
         finally:
@@ -214,5 +220,78 @@ class SessionManager:
                 self.CleanupIncompleteTurns(user_id)
         except Exception as e:
             print(f"Cleanup error: {e}")
+        finally:
+            db.close()
+
+    def GetSummaries(self, user_id):
+        db = get_session()
+        try:
+            user = db.query(User).filter(User.telegram_id == user_id).first()
+            if not user:
+                return []
+            summaries = db.query(ChatSummary).filter(ChatSummary.user_id == user.id).order_by(ChatSummary.created_at.asc()).all()
+            return [s.summary_text for s in summaries]
+        finally:
+            db.close()
+
+    def CompactHistory(self, user_id, provider):
+        db = get_session()
+        try:
+            user = db.query(User).filter(User.telegram_id == user_id).first()
+            if not user:
+                return
+            
+            # Count active messages
+            active_count = db.query(ChatHistory).filter(
+                ChatHistory.user_id == user.id,
+                ChatHistory.active == 1
+            ).count()
+            
+            # Compaction threshold
+            if active_count > 50:
+                print(f"Compacting history for {user_id}. Active messages: {active_count}")
+                import json
+                
+                # Get the oldest 40 messages to compact
+                messages = db.query(ChatHistory).filter(
+                    ChatHistory.user_id == user.id,
+                    ChatHistory.active == 1
+                ).order_by(ChatHistory.timestamp.asc()).limit(40).all()
+                
+                if not messages:
+                    return
+                    
+                transcript = ""
+                for msg_entry in messages:
+                    msg = json.loads(msg_entry.message_json)
+                    role = msg.get("role", "unknown")
+                    msg_content = str(msg.get("content", ""))
+                    if role == "user":
+                        transcript += f"User: {msg_content}\n"
+                    elif role == "assistant":
+                        if "tool_calls" in msg:
+                            transcript += f"Assistant called tools.\n"
+                        else:
+                            transcript += f"Assistant: {msg_content[:100]}...\n"
+                    elif role == "tool":
+                        transcript += f"Tool executed.\n"
+                        
+                # Ask LLM to summarize
+                prompt = f"Summarize the following chat history into a concise 1-2 paragraph context summary. Focus on what the user's goals are, what has been accomplished, and what is currently ongoing. Do not include trivial conversational filler.\n\nHistory:\n{transcript}"
+                
+                response = provider.ExecutePrompt(PromptText=prompt)
+                summary_text = response.get("content", "") if isinstance(response, dict) else str(response)
+                
+                if summary_text and "Error" not in summary_text:
+                    # Save summary
+                    new_summary = ChatSummary(user_id=user.id, summary_text=summary_text)
+                    db.add(new_summary)
+                    
+                    # Deactivate the compacted messages
+                    for msg_entry in messages:
+                        msg_entry.active = 0
+                    
+                    db.commit()
+                    print(f"Compaction complete for {user_id}.")
         finally:
             db.close()

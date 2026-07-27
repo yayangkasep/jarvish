@@ -1,3 +1,4 @@
+from config.logger import logger
 import json
 import re
 
@@ -31,11 +32,23 @@ class AgentOrchestrator:
             else:
                 self.sessions.AddMessage(user_id, "user", text)
 
+            # Call memory compaction to summarize very old messages
+            self.sessions.CompactHistory(user_id, self.provider)
+
             # Fetch full history
             raw_history = self.sessions.GetHistory(user_id)
 
             # Inject System Context
             system_text = f"Identitas Pengguna (User ID): {user_id}\n"
+            
+            # Inject Summaries
+            if hasattr(self.sessions, 'GetSummaries'):
+                summaries = self.sessions.GetSummaries(user_id)
+                if summaries:
+                    system_text += "\n--- RINGKASAN PERCAKAPAN SEBELUMNYA (ARCHIVED) ---\n"
+                    system_text += "\n".join(f"- {s}" for s in summaries)
+                    system_text += "\n------------------------------------------------\n\n"
+            
             facts = self.memory.GetFacts(user_id)
             if facts:
                 system_text += "FAKTA PENTING TENTANG PENGGUNA YANG HARUS DIINGAT:\n"
@@ -79,7 +92,7 @@ class AgentOrchestrator:
                                 }
                             ]
                     except Exception as e:
-                        print(f"Error parsing manual tool call: {e}")
+                        logger.error(f"Error parsing manual tool call: {e}")
 
                 # Support legacy function_call format
                 if not tool_calls and response_msg.get("function_call"):
@@ -106,11 +119,11 @@ class AgentOrchestrator:
                                 else args_str
                             )
                         except Exception as e:
-                            print(f"Error parsing args: {e}")
+                            logger.error(f"Error parsing args: {e}")
                             args = {}
 
                         # Execute the tool
-                        print(f"Executing tool {tool_name} with args {args}")
+                        logger.info(f"Executing tool {tool_name} with args {args}")
                         if progress_callback:
                             progress_callback(f"Accessing system resource: {tool_name}...")
 
@@ -141,5 +154,5 @@ class AgentOrchestrator:
 
             return response
         except Exception as e:
-            print(f"Error processing prompt: {e}")
+            logger.error(f"Error processing prompt: {e}")
             raise
