@@ -29,7 +29,8 @@ class AiProvider:
 
         Payload = {
             "model": self.Settings.GetLlmModel(), 
-            "temperature": self.Settings.GetLlmTemperature()
+            "temperature": self.Settings.GetLlmTemperature(),
+            "stream": False
         }
 
         if Messages is not None:
